@@ -263,7 +263,8 @@ void Model::LoadNode(Node*                            parent,
                      const tinygltf::Model&           gltf_model,
                      std::vector<Uint32>&             IndexData,
                      std::vector<VertexBasicAttribs>& VertexBasicData,
-                     std::vector<VertexSkinAttribs>*  pVertexSkinData)
+                     std::vector<VertexSkinAttribs>*  pVertexSkinData,
+                     std::vector<Uint32>&             TriangleData)
 {
     std::unique_ptr<Node> NewNode{new Node{}};
     NewNode->Index     = nodeIndex;
@@ -304,7 +305,7 @@ void Model::LoadNode(Node*                            parent,
         for (size_t i = 0; i < gltf_node.children.size(); i++)
         {
             LoadNode(NewNode.get(), gltf_model.nodes[gltf_node.children[i]], gltf_node.children[i], gltf_model,
-                     IndexData, VertexBasicData, pVertexSkinData);
+                     IndexData, VertexBasicData, pVertexSkinData, TriangleData);
         }
     }
 
@@ -317,8 +318,9 @@ void Model::LoadNode(Node*                            parent,
         {
             const tinygltf::Primitive& primitive = gltf_mesh.primitives[j];
 
-            uint32_t indexStart  = static_cast<uint32_t>(IndexData.size());
-            uint32_t vertexStart = static_cast<uint32_t>(VertexBasicData.size());
+            uint32_t indexStart    = static_cast<uint32_t>(IndexData.size());
+            uint32_t vertexStart   = static_cast<uint32_t>(VertexBasicData.size());
+            uint32_t triangleStart = static_cast<uint32_t>(TriangleData.size());
             VERIFY_EXPR(pVertexSkinData == nullptr || pVertexSkinData->empty() || VertexBasicData.size() == pVertexSkinData->size());
 
             uint32_t indexCount  = 0;
@@ -522,6 +524,14 @@ void Model::LoadNode(Node*                            parent,
                         std::cerr << "Index component type " << accessor.componentType << " not supported!" << std::endl;
                         return;
                 }
+
+                for (uint32_t i = indexStart; i < IndexData.size(); i += 3)
+                {
+                    uint id = 0;
+                    id |= (static_cast<uint32_t>(gltf_node.mesh) & 0xFFFF);
+                    id |= (static_cast<uint32_t>(primitive.material) & 0xFFFF) << 16;
+                    TriangleData.push_back({id});
+                }
             }
             pNewMesh->Primitives.emplace_back( //
                 indexStart,
@@ -529,7 +539,8 @@ void Model::LoadNode(Node*                            parent,
                 vertexCount,
                 primitive.material >= 0 ? static_cast<Uint32>(primitive.material) : static_cast<Uint32>(Materials.size() - 1),
                 PosMin,
-                PosMax
+                PosMax,
+                triangleStart
                 //
             );
         }
@@ -881,7 +892,7 @@ void Model::LoadTextures(IRenderDevice*         pDevice,
                 TexDesc.Height    = 32;
                 TexDesc.Format    = TEX_FORMAT_RGBA8_UNORM;
                 TexDesc.MipLevels = 1;
-                TexDesc.Usage     = USAGE_DEFAULT;
+                TexDesc.Usage     = USAGE_IMMUTABLE;
                 TexDesc.BindFlags = BIND_SHADER_RESOURCE;
 
                 RefCntAutoPtr<TextureInitData> pTexInitData{MakeNewRCObj<TextureInitData>()()};
@@ -1060,6 +1071,7 @@ void Model::PrepareGPUResources(IRenderDevice* pDevice, IDeviceContext* pCtx)
     UpdateBuffer(BUFFER_ID_VERTEX_BASIC_ATTRIBS);
     UpdateBuffer(BUFFER_ID_VERTEX_SKIN_ATTRIBS);
     UpdateBuffer(BUFFER_ID_INDEX);
+    UpdateBuffer(BUFFER_ID_TRIANGLES);
 
     if (!Barriers.empty())
         pCtx->TransitionResourceStates(static_cast<Uint32>(Barriers.size()), Barriers.data());
@@ -1760,6 +1772,7 @@ void Model::LoadFromFile(IRenderDevice*    pDevice,
     std::vector<Uint32>             IndexData;
     std::vector<VertexBasicAttribs> VertexBasicData;
     std::vector<VertexSkinAttribs>  VertexSkinData;
+    std::vector<Uint32>             TriangleData;
 
     // TODO: scene handling with no default scene
     const tinygltf::Scene& scene = gltf_model.scenes[gltf_model.defaultScene > -1 ? gltf_model.defaultScene : 0];
@@ -1768,7 +1781,8 @@ void Model::LoadFromFile(IRenderDevice*    pDevice,
         const tinygltf::Node node = gltf_model.nodes[scene.nodes[i]];
         LoadNode(nullptr, node, scene.nodes[i], gltf_model,
                  IndexData, VertexBasicData,
-                 CI.LoadAnimationAndSkin ? &VertexSkinData : nullptr);
+                 CI.LoadAnimationAndSkin ? &VertexSkinData : nullptr,
+                 TriangleData);
     }
 
     if (CI.LoadAnimationAndSkin)
@@ -1834,6 +1848,7 @@ void Model::LoadFromFile(IRenderDevice*    pDevice,
             BuffDesc.uiSizeInBytes = BufferSize;
             BuffDesc.BindFlags     = BindFlags;
             BuffDesc.Usage         = USAGE_IMMUTABLE;
+            BuffDesc.Mode          = BUFFER_MODE_RAW;
 
             BufferData BuffData{pData, BuffDesc.uiSizeInBytes};
             pDevice->CreateBuffer(BuffDesc, &BuffData, &Buffers[BuffId].pBuffer);
@@ -1841,7 +1856,7 @@ void Model::LoadFromFile(IRenderDevice*    pDevice,
     };
 
     CreateBuffer(BUFFER_ID_VERTEX_BASIC_ATTRIBS, VertexBasicData.data(), VertexBasicData.size() * sizeof(VertexBasicData[0]),
-                 BIND_VERTEX_BUFFER, "GLTF vertex attribs 0 buffer");
+                 BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING, "GLTF vertex attribs 0 buffer");
 
     if (!VertexSkinData.empty())
     {
@@ -1852,7 +1867,13 @@ void Model::LoadFromFile(IRenderDevice*    pDevice,
     if (!IndexData.empty())
     {
         CreateBuffer(BUFFER_ID_INDEX, IndexData.data(), IndexData.size() * sizeof(IndexData[0]),
-                     BIND_INDEX_BUFFER, "GLTF index buffer");
+                     BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING, "GLTF index buffer");
+    }
+
+    if (!TriangleData.empty())
+    {
+        CreateBuffer(BUFFER_ID_TRIANGLES, TriangleData.data(), TriangleData.size() * sizeof(TriangleData[0]),
+                     BIND_SHADER_RESOURCE, "GLTF triangle buffer");
     }
 
     if (pContext != nullptr)

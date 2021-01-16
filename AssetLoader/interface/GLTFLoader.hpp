@@ -59,9 +59,10 @@ struct ResourceCacheUseInfo
 {
     ResourceManager* pResourceMgr = nullptr;
 
-    Uint8 IndexBufferIdx   = 0;
-    Uint8 VertexBuffer0Idx = 0;
-    Uint8 VertexBuffer1Idx = 0;
+    Uint8 IndexBufferIdx    = 0;
+    Uint8 VertexBuffer0Idx  = 0;
+    Uint8 VertexBuffer1Idx  = 0;
+    Uint8 TriangleBufferIdx = 0;
 
     /// Base color texture format.
     TEXTURE_FORMAT BaseColorFormat = TEX_FORMAT_RGBA8_UNORM;
@@ -168,6 +169,7 @@ struct Primitive
     const Uint32 IndexCount;
     const Uint32 VertexCount;
     const Uint32 MaterialId;
+    const Uint32 FirstTriangle;
 
     const BoundBox BB;
 
@@ -176,11 +178,13 @@ struct Primitive
               Uint32        _VertexCount,
               Uint32        _MaterialId,
               const float3& BBMin,
-              const float3& BBMax) :
+              const float3& BBMax,
+              Uint32        _FirstTriangle) :
         FirstIndex{_FirstIndex},
         IndexCount{_IndexCount},
         VertexCount{_VertexCount},
         MaterialId{_MaterialId},
+        FirstTriangle{_FirstTriangle},
         BB{BBMin, BBMax}
     {
     }
@@ -344,11 +348,18 @@ struct Model
         float4 weight0;
     };
 
+    // for ray tracing
+    struct TriangleAttribs
+    {
+        uint objectIdAndMaterialId;
+    };
+
     enum BUFFER_ID
     {
         BUFFER_ID_VERTEX_BASIC_ATTRIBS = 0,
         BUFFER_ID_VERTEX_SKIN_ATTRIBS,
         BUFFER_ID_INDEX,
+        BUFFER_ID_TRIANGLES,
         BUFFER_ID_NUM_BUFFERS
     };
 
@@ -472,7 +483,8 @@ private:
                   const tinygltf::Model&           gltf_model,
                   std::vector<Uint32>&             IndexData,
                   std::vector<VertexBasicAttribs>& VertexBasicData,
-                  std::vector<VertexSkinAttribs>*  pVertexSkinData);
+                  std::vector<VertexSkinAttribs>*  pVertexSkinData,
+                  std::vector<Uint32>&             TriangleData);
 
     void LoadSkins(const tinygltf::Model& gltf_model);
 
